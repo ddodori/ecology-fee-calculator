@@ -41,8 +41,9 @@ def _cache_formula_results(xlsx_bytes: bytes, cache_by_sheet: dict) -> bytes:
     The web download preview may not calculate Excel formulas. Without formula
     caches, fields such as F23/F28 and totals appear blank until Excel recalculates.
     """
-    from xml.sax.saxutils import escape
-    cell_rx = re.compile(rb'(<c\b[^>]*\br="([A-Z]+[0-9]+)"[^>]*>)(.*?)(</c>)', re.S)
+    # Do not treat self-closing <c .../> as the beginning of a formula cell.
+    # Otherwise the regex may consume the NEXT real cell and skip its formula.
+    cell_rx = re.compile(rb'(<c\b[^>]*\br="([A-Z]+[0-9]+)"[^>]*?(?<!/)>)((?:(?!<c\b).)*?)(</c>)', re.S)
     value_rx = re.compile(rb'<v(?:\s[^>]*)?>.*?</v>|<v\s*/>', re.S)
     dst = BytesIO()
     with ZipFile(BytesIO(xlsx_bytes), 'r') as source, ZipFile(dst, 'w') as target:
