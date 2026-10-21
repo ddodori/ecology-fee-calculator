@@ -7,6 +7,8 @@ from decimal import Decimal, ROUND_DOWN
 from io import BytesIO
 from pathlib import Path
 from copy import copy
+import re
+from zipfile import ZipFile
 from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -31,6 +33,59 @@ def classify_zone(name):
     if '보전관리' in s:return 4
     if '자연환경보전' in s:return 5
     return None
+
+
+def _cache_formula_results(xlsx_bytes: bytes, cache_by_sheet: dict) -> bytes:
+    """Keep Excel formulas editable while persisting numeric cached values.
+
+    The web download preview may not calculate Excel formulas. Without formula
+    caches, fields such as F23/F28 and totals appear blank until Excel recalculates.
+    """
+    from xml.sax.saxutils import escape
+    cell_rx = re.compile(rb'(<c\b[^>]*\br="([A-Z]+[0-9]+)"[^>]*>)(.*?)(</c>)', re.S)
+    value_rx = re.compile(rb'<v(?:\s[^>]*)?>.*?</v>|<v\s*/>', re.S)
+    dst = BytesIO()
+    with ZipFile(BytesIO(xlsx_bytes), 'r') as source, ZipFile(dst, 'w') as target:
+        for info in source.infolist():
+            data = source.read(info.filename)
+            caches = cache_by_sheet.get(info.filename)
+            if caches:
+                seen = set()
+                def replace_cell(match):
+                    coord = match.group(2).decode('ascii')
+                    if coord not in caches:
+                        return match.group(0)
+                    body = match.group(3)
+                    if not re.search(rb'<f(?:\s|>)', body):
+                        raise ValueError(f'계산 수식이 없는 셀: {info.filename} {coord}')
+                    value = dec(caches[coord])
+                    number = format(value, 'f').rstrip('0').rstrip('.') if '.' in format(value, 'f') else format(value, 'f')
+                    if number in ('', '-0'):
+                        number = '0'
+                    entry = ('<v>' + number + '</v>').encode('ascii')
+                    if value_rx.search(body):
+                        body = value_rx.sub(lambda m: entry, body, count=1)
+                    else:
+                        body += entry
+                    seen.add(coord)
+                    return match.group(1) + body + match.group(4)
+                data = cell_rx.sub(replace_cell, data)
+                if seen != set(caches):
+                    raise ValueError(f'결과 값이 누락된 셀: {info.filename}: {sorted(set(caches)-seen)[:8]}')
+            target.writestr(info, data)
+    return dst.getvalue()
+
+
+def _display_format(value):
+    """Number format that uses a dash for zero without a stray trailing dot."""
+    x = dec(value)
+    if x == x.to_integral_value():
+        base = '#,##0'
+    elif x * 10 == (x * 10).to_integral_value():
+        base = '#,##0.0'
+    else:
+        base = '#,##0.00'
+    return base + ';-' + base + ';"-"'
 
 
 def build_statement(damage, ecology, *, project_name='', project_location='', owner='', owners=None, authority='', unit_price=300, approval_note='', region_factors=None):
@@ -338,9 +393,73 @@ def build_statement(damage, ecology, *, project_name='', project_location='', ow
     sheet['B31']='※ 산정방식: 「자연환경보전법 시행령」 제37조·제38조 및 적용 기준에 따라 검토. 300원/㎡: 제38조제1항. 지역계수: 제38조제2항·별표 2의5.'
     sheet['B31'].alignment=Alignment(wrap_text=True,vertical='center')
     sheet.row_dimensions[31].height=42
+    # Report display: 0 is shown as "-", but remains numeric 0 in Excel.
+    # Keep F27 genuinely blank: original-conservation area is not yet automated.
+    for coord, value in {
+        'F22': remain+excluded, 'F23': excluded, 'F24': damage.first_m2,
+        'F25': damage.second_m2, 'F26': damage.third_m2, 'F28': remain,
+    }.items():
+        sheet[coord].number_format = _display_format(value)
+
+    regional_amounts = []
+    ecological_amounts = []
+    for idx, (area, factor) in enumerate(zip(totals, region_factors), 36):
+        regional_amounts.append(dec(area) * price * dec(factor) / 2)
+        sheet[f'E{idx}'].number_format = _display_format(area)
+        sheet[f'F{idx}'].number_format = _display_format(price)
+        sheet[f'H{idx}'].number_format = _display_format(factor)
+        sheet[f'I{idx}'].number_format = _display_format(regional_amounts[-1])
+    for idx, (area, factor) in enumerate(zip(eco, GRADE_FACTORS), 43):
+        ecological_amounts.append(dec(area) * price * dec(factor) / 2)
+        sheet[f'E{idx}'].number_format = _display_format(area)
+        sheet[f'F{idx}'].number_format = _display_format(price)
+        sheet[f'H{idx}'].number_format = _display_format(factor)
+        sheet[f'I{idx}'].number_format = _display_format(ecological_amounts[-1])
+
+    region_total = sum(regional_amounts, Decimal(0))
+    ecology_total = sum(ecological_amounts, Decimal(0))
+    grand_total = region_total + ecology_total
+    fee_due = (grand_total / Decimal(10)).to_integral_value(rounding=ROUND_DOWN) * 10
+    surcharge = (grand_total * Decimal('0.03') / 10).to_integral_value(rounding=ROUND_DOWN) * 10
+    displayed_formula_results = {
+        'F23': excluded,
+        'F28': remain,
+        'E35': sum(totals, Decimal(0)),
+        'E42': sum(eco, Decimal(0)),
+        'E34': (sum(totals, Decimal(0)) + sum(eco, Decimal(0))) / 2,
+        'I35': region_total,
+        'I42': ecology_total,
+        'I34': grand_total,
+        'D48': surcharge,
+        'F50': fee_due,
+        'F52': fee_due + surcharge,
+    }
+    displayed_formula_results.update({f'I{row}': amount for row, amount in enumerate(regional_amounts, 36)})
+    displayed_formula_results.update({f'I{row}': amount for row, amount in enumerate(ecological_amounts, 43)})
+    for coord, value in displayed_formula_results.items():
+        sheet[coord].number_format = _display_format(value)
+
+    # Ecology and land-area numeric cells receive the same dash-for-zero style.
+    ecology_caches = {}
+    for rownum, (_, record) in enumerate(ecology.details.iterrows(), 2):
+        areas = [dec(record.get(key, 0)) for key in ('1등급(㎡)', '2등급(㎡)', '3등급(㎡)', '별도관리(㎡)')]
+        for col, value in zip('GHIJ', areas):
+            eco_sheet[f'{col}{rownum}'].number_format = _display_format(value)
+        eco_sheet[f'F{rownum}'].number_format = _display_format(record.get('잔여면적(㎡)', 0))
+        eco_sheet[f'K{rownum}'].number_format = _display_format(sum(areas))
+        ecology_caches[f'K{rownum}'] = sum(areas)
+    for row in land.iter_rows(min_row=4):
+        for colnum in (6, 7, 10, 11, 12, 13, 14):
+            cell = row[colnum-1]
+            if isinstance(cell.value, (int, float, Decimal)):
+                cell.number_format = _display_format(cell.value)
     source_book.close()
 
     book.calculation.fullCalcOnLoad=True;book.calculation.forceFullCalc=True;book.calculation.calcMode='auto'
     stream=BytesIO();book.save(stream)
-    return stream.getvalue(), {'전체편입면적':remain+excluded,'산정대상면적':remain,'1차제외':dec(damage.first_m2),
+    completed_bytes = _cache_formula_results(stream.getvalue(), {
+        'xl/worksheets/sheet1.xml': displayed_formula_results,
+        'xl/worksheets/sheet3.xml': ecology_caches,
+    })
+    return completed_bytes, {'전체편입면적':remain+excluded,'산정대상면적':remain,'1차제외':dec(damage.first_m2),
                                 '2차제외':dec(damage.second_m2),'3차제외':dec(damage.third_m2),'지역별':totals,'생태별':eco}
