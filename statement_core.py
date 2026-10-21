@@ -292,40 +292,44 @@ def build_statement(damage, ecology, *, project_name='', project_location='', ow
     sheet['H28']='전체 편입면적에서 훼손 제외면적을 차감한 산정대상면적'
     # Multi-owner data remain readable and grouped by legal identity field.
     owners=owners if owners is not None else ([{'name':owner,'address':'','business_number':'','corporate_number':''}] if owner else [])
-    owner_cols={'name':8,'address':10,'business_number':12,'corporate_number':14}
-    for field,rownum in owner_cols.items():
-        sheet.cell(rownum,4,'\n'.join(f'  ①' if False else f'{idx+1}. {o.get(field,"")}' for idx,o in enumerate(owners)))
-        sheet.cell(rownum,4).alignment=Alignment(vertical='center',wrap_text=True)
-        sheet.row_dimensions[rownum].height=max(32,20*len(owners))
-    for idx,(area,fac) in enumerate(zip(totals,region_factors),36):
-        sheet.cell(idx,5,float(area));sheet.cell(idx,6,float(price));sheet.cell(idx,8,fac)
-        sheet.cell(idx,9,f'=E{idx}*F{idx}*H{idx}/2')
-    for idx,(area,fac) in enumerate(zip(eco,GRADE_FACTORS),43):
-        sheet.cell(idx,5,float(area));sheet.cell(idx,6,float(price));sheet.cell(idx,8,fac)
-        sheet.cell(idx,9,f'=E{idx}*F{idx}*H{idx}/2')
-    sheet['E35']='=SUM(E36:E41)';sheet['I35']='=SUM(I36:I41)'
-    sheet['E42']='=SUM(E43:E46)';sheet['I42']='=SUM(I43:I46)'
-    sheet['E34']='=(E35+E42)/2';sheet['I34']='=I35+I42'
-    sheet['D48']='=ROUNDDOWN(I34*3/100,-1)'
-    sheet['F50']='=ROUNDDOWN(I34,-1)'
-    sheet['F52']='=F50+D48'
-    sheet['B19']=' 2. 생태계 훼손면적 및 제외면적'
-    sheet['B28']='③ 산정대상면적 (①-②)'
-    sheet['B30']=' 3. 생태계보전부담금 산정내역'
-    sheet['H21']='비고'
-    for row in [22,24,25,26,27]:
-        val=sheet.cell(row,6).value
-        if isinstance(val,(float,int)):
-            v=dec(val)
-            sheet.cell(row,6).number_format='#,##0' if v==v.to_integral_value() else ('#,##0.0' if v*10==(v*10).to_integral_value() else '#,##0.00')
-    for row in [23,28]:sheet.cell(row,6).number_format='#,##0.00'
-    for row in list(range(36,42))+list(range(43,47)):
-        v=dec(sheet.cell(row,5).value)
-        sheet.cell(row,5).number_format='#,##0' if v==v.to_integral_value() else ('#,##0.0' if v*10==(v*10).to_integral_value() else '#,##0.00')
-        sheet.cell(row,9).number_format='#,##0'
-    sheet['B31']='※ 산정방식: 「자연환경보전법 시행령」 제37조·제38조 및 적용 기준에 따라 검토. 300원/㎡: 제38조제1항. 지역계수: 제38조제2항·별표 2의5.'
-    sheet['B31'].alignment=Alignment(wrap_text=True,vertical='center')
-    sheet.row_dimensions[31].height=42
+    
+    owner_cols = {
+        'name': 8,
+        'address': 10,
+        'business_number': 12,
+        'corporate_number': 14
+    }
+
+    for field, rownum in owner_cols.items():
+        left_values = []
+        right_values = []
+
+        for idx, o in enumerate(owners):
+            value = str(o.get(field, '') or '').strip()
+
+            if not value:
+                continue
+
+            entry = f'{idx + 1}. {value}'
+
+            if idx % 2 == 0:
+                left_values.append(entry)
+            else:
+                right_values.append(entry)
+
+        for col, entries in ((4, left_values), (8, right_values)):
+            cell = sheet.cell(rownum, col)
+            cell.value = '\n'.join(entries)
+            cell.alignment = Alignment(
+                horizontal='left',
+                vertical='center',
+                wrap_text=True
+            )
+
+        sheet.row_dimensions[rownum].height = max(
+            32, 20 * max(len(left_values), len(right_values))
+        )
+
     source_book.close()
 
     book.calculation.fullCalcOnLoad=True;book.calculation.forceFullCalc=True;book.calculation.calcMode='auto'
