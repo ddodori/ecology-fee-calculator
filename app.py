@@ -6,6 +6,7 @@ V1.3의 PNU 생성/건축물 여부 대조 엔진을 유지하면서,
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 import pandas as pd
 import streamlit as st
 
@@ -25,6 +26,26 @@ st.set_page_config(page_title="환경부담금 산정 자동화", page_icon="�
 st.title("🌿 환경부담금 산정 자동화")
 st.caption("생태계보전부담금 산정 업무 지원 시스템 · V1.4.22")
 st.info("사용 가능: **건축물대장 PNU 생성·토지조서 대조 통합**, **용도지역 교차분석·면적 자동 보정**. 훼손 제외면적 분석과 생태자연도 등급별 면적 보정도 사용 가능합니다. 최종 산정명세서 검토용 작성이 가능합니다.")
+
+# 메인 화면에서 프로그램 사용 매뉴얼을 바로 내려받을 수 있습니다.
+MANUAL_PDF = Path(__file__).resolve().parent / "생태보전부담금자동화_매뉴얼.pdf"
+with st.container(border=True):
+    manual_text, manual_button = st.columns([3, 2], vertical_alignment="center")
+    with manual_text:
+        st.markdown("#### 📘 프로그램 사용 매뉴얼")
+        st.caption("기초자료 준비부터 훼손 제외·생태자연도 분석 및 산정명세서 작성까지 · PDF 4페이지")
+    with manual_button:
+        if MANUAL_PDF.is_file():
+            st.download_button(
+                "📥 사용 매뉴얼 PDF 다운로드",
+                data=MANUAL_PDF.read_bytes(),
+                file_name="생태보전부담금자동화_매뉴얼.pdf",
+                mime="application/pdf",
+                use_container_width=True,
+                key="main_manual_pdf_v1422",
+            )
+        else:
+            st.warning("사용 매뉴얼 PDF가 없습니다. GitHub에 app.py와 같은 위치에 업로드해 주세요.")
 
 # 산정 기준 용도지역코드는 프로그램 내부에 포함되어 있으며 업로드를 요구하지 않습니다.
 try:
